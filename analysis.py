@@ -110,6 +110,7 @@ def run(frame, features, categorical, target, positive, group_column, family, tr
     outer = splits(x,y,groups,folds,2026)
     predictions, decisions = np.zeros(len(y)), np.zeros(len(y), dtype=int)
     importances, configs = [], []
+    shap_values=np.zeros((len(y),len(features)));shap_base=np.zeros(len(y))
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     for k,(train,test) in enumerate(outer):
         if cancelled(): raise InterruptedError('Расчёт отменён')
@@ -143,6 +144,21 @@ def run(frame, features, categorical, target, positive, group_column, family, tr
         model=pipeline(a,categorical,family,study.best_params).fit(a,b)
         predictions[test]=model.predict_proba(x.iloc[test])[:,1]
         decisions[test]=predictions[test]>=threshold
+        import shap
+        progress(f'SHAP внешнего блока {k+1}/{folds}')
+        encoded=x.copy()
+        category_maps={c:list(x[c].dropna().unique()) for c in categorical}
+        for c,levels in category_maps.items():
+            encoded[c]=x[c].map({v:i for i,v in enumerate(levels)}).astype(float)
+        def predict_encoded(values):
+            if cancelled():raise InterruptedError('Расчёт отменён')
+            frame=pd.DataFrame(values,columns=features)
+            for c,levels in category_maps.items():frame[c]=frame[c].map({i:v for i,v in enumerate(levels)})
+            return model.predict_proba(frame)[:,1]
+        background=encoded.iloc[train].sample(min(30,len(train)),random_state=2026).to_numpy(float)
+        explainer=shap.Explainer(predict_encoded,shap.maskers.Independent(background),algorithm='permutation',seed=2026)
+        explanation=explainer(encoded.iloc[test].to_numpy(float),max_evals=2*len(features)+1)
+        shap_values[test]=explanation.values;shap_base[test]=explanation.base_values
         imp=permutation_importance(model,x.iloc[test],y[test],scoring='average_precision',n_repeats=5,random_state=2026)
         importances.append(imp.importances_mean)
         configs.append({'fold':k+1,'params':study.best_params,'threshold':float(threshold),'inner_AP':study.best_value})
@@ -155,4 +171,6 @@ def run(frame, features, categorical, target, positive, group_column, family, tr
     return dict(metrics=metrics,stats=stat,importance=pd.DataFrame({'Признак':features,'ΔAP':np.mean(importances,axis=0)}),
                 predictions=pd.DataFrame({'row_index':d.index,'outcome':y,'probability':predictions,'prediction':decisions}),
                 configs=configs,features=features,categorical=categorical,family=family,folds=folds,trials=trials,
-                target=target,positive=positive,group_column=group_column)
+                target=target,positive=positive,group_column=group_column,
+                shap_values=pd.DataFrame(shap_values,columns=features),
+                shap_data=encoded.reset_index(drop=True),shap_base=pd.DataFrame({'base':shap_base}))

@@ -2,5 +2,6 @@
 __pycache__/
 .idea/
 *.csv
+!/data/02_данные_с_обзвоном.csv
 *.joblib
 *.sqlite
